@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/polycentric-commonwealth/foundation/amount"
+	"github.com/polycentric-commonwealth/foundation/audit"
 	"github.com/polycentric-commonwealth/foundation/dividend"
 	"github.com/polycentric-commonwealth/foundation/record"
 )
@@ -43,9 +44,9 @@ func (s *Store) Snapshot(on time.Time) (ids []string, adults int64, err error) {
 	return ids, adults, rows.Err()
 }
 
-// SaveCount stores a sent eligibility-count record and the residents it
-// counted.
-func (s *Store) SaveCount(env *record.Envelope, residentIDs []string) error {
+// SaveCount stores a sent eligibility-count record and the committed list
+// of residents it counted.
+func (s *Store) SaveCount(env *record.Envelope, entries []audit.Entry) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -54,12 +55,39 @@ func (s *Store) SaveCount(env *record.Envelope, residentIDs []string) error {
 	if err := insertRecord(tx, env, "sent", env.To, false); err != nil {
 		return err
 	}
-	for _, id := range residentIDs {
-		if _, err := tx.Exec(`INSERT INTO eligibility_snapshots (count_record, resident_id) VALUES (?, ?)`, env.ID, id); err != nil {
+	stmt, err := tx.Prepare(`INSERT INTO eligibility_snapshots (count_record, resident_id, position, salt, commitment) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, e := range entries {
+		if _, err := stmt.Exec(env.ID, e.Ref, e.Index, e.Salt[:], e.Commitment[:]); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// CountEntries returns the committed recipient list behind a count, in list
+// order.
+func (s *Store) CountEntries(countID string) ([]audit.Entry, error) {
+	rows, err := s.db.Query(`SELECT position, resident_id, salt, commitment FROM eligibility_snapshots WHERE count_record = ? ORDER BY position`, countID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []audit.Entry
+	for rows.Next() {
+		var e audit.Entry
+		var salt, commitment []byte
+		if err := rows.Scan(&e.Index, &e.Ref, &salt, &commitment); err != nil {
+			return nil, err
+		}
+		copy(e.Salt[:], salt)
+		copy(e.Commitment[:], commitment)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // HasCountForPeriod reports whether an eligibility count was already sent

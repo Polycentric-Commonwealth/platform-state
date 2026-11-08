@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.7
 
 require (
-	github.com/polycentric-commonwealth/foundation v0.0.0-20261108193325-ed1869570857
+	github.com/polycentric-commonwealth/foundation v0.0.0-20261108201333-4f092a9cdd9b
 	modernc.org/sqlite v1.39.1
 )
 

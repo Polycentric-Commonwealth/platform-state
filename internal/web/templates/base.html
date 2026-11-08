@@ -69,6 +69,7 @@
       <th scope="col" class="num">Per person</th>
       <th scope="col" class="num">Total</th>
       <th scope="col">Status</th>
+      <th scope="col">Audit</th>
       {{if .Actions}}<th scope="col">Action</th>{{end}}
     </tr>
   </thead>
@@ -80,13 +81,14 @@
       <td data-label="Per person" class="num">{{if .Settlement}}{{money .Settlement.PerPerson}} {{.Settlement.Unit}}{{else}}–{{end}}</td>
       <td data-label="Total" class="num">{{if .Settlement}}{{money .Settlement.Total}} {{.Settlement.Unit}}{{else}}–{{end}}</td>
       <td data-label="Status"><span class="status {{.StatusClass}}">{{.Status}}</span></td>
+      <td data-label="Audit">{{if .AuditClass}}<span class="status {{.AuditClass}}">{{.Audit}}</span>{{else}}<span class="muted">{{.Audit}}</span>{{end}}</td>
       {{if $.Actions}}<td data-label="Action"><span class="cell">
         {{if .CanPay}}<form class="inline-form" method="post" action="/officials/pay/{{.Settlement.RecordID}}"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="primary" type="submit">Pay {{.Recipients}} residents</button></form>{{end}}
         {{range .Resend}}<form class="inline-form" method="post" action="/officials/resend/{{.}}"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="secondary" type="submit">Send again</button></form>{{end}}
       </span></td>{{end}}
     </tr>
   {{else}}
-    <tr><td colspan="6">No dividend periods yet.{{if .Actions}} Report the first eligibility count above.{{end}}</td></tr>
+    <tr><td colspan="7">No dividend periods yet.{{if .Actions}} Report the first eligibility count above.{{end}}</td></tr>
   {{end}}
   </tbody>
 </table>

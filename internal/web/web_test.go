@@ -164,6 +164,15 @@ func TestDividendCycleThroughTheWeb(t *testing.T) {
 	if _, page := get(t, client(t), srv.URL+"/ledger"); strings.Count(page, "Witnessed") != 2 {
 		t.Errorf("public ledger does not show two witnessed records")
 	}
+	// The audit finding appears on the public page.
+	passed := false
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline) && !passed; time.Sleep(50 * time.Millisecond) {
+		_, page := get(t, client(t), srv.URL+"/dividends")
+		passed = strings.Contains(page, "Passed: all 12 sampled verified")
+	}
+	if !passed {
+		t.Error("the audit result never appeared on the dividends page")
+	}
 
 	// A resident sees their payment; a wrong date of birth reveals nothing.
 	r, _ := net.Store.Resident("R-000004")

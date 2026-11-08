@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/polycentric-commonwealth/foundation/audit"
 	"github.com/polycentric-commonwealth/foundation/dividend"
 	"github.com/polycentric-commonwealth/foundation/ledger"
 	"github.com/polycentric-commonwealth/foundation/protocol"
@@ -39,7 +41,12 @@ type State struct {
 	Receiver *protocol.Receiver
 	Sender   *protocol.Sender
 	Witness  *ledger.Witness
+
+	wg sync.WaitGroup // background audit answers
 }
+
+// Close waits for background work to finish.
+func (s *State) Close() { s.wg.Wait() }
 
 // New returns a State ready to serve.
 func New(cfg Config) (*State, error) {
@@ -57,7 +64,11 @@ func New(cfg Config) (*State, error) {
 		Registry: cfg.Registry,
 		Store:    store.Inbox{S: cfg.Store},
 		Now:      cfg.Now,
-		Handlers: map[string]protocol.Handler{dividend.SettlementType: s.receiveSettlement},
+		Handlers: map[string]protocol.Handler{
+			dividend.SettlementType: s.receiveSettlement,
+			audit.RequestType:       s.receiveAuditRequest,
+			audit.FindingType:       s.receiveFinding,
+		},
 	}
 	s.Witness = &ledger.Witness{Self: cfg.Identity, Registry: cfg.Registry, Store: &ledger.MemoryWitnessStore{}, Now: cfg.Now}
 	return s, nil
@@ -111,7 +122,14 @@ func (s *State) ReportEligibility(ctx context.Context, period string) (*record.E
 	if err != nil {
 		return nil, err
 	}
-	count := dividend.EligibilityCount{Period: period, Residents: int64(len(ids)), Adults: adults, DividendRecipients: int64(len(ids))}
+	// Commit to exactly who was counted, so the count can be audited
+	// (specs/eligibility-audit.md).
+	entries, root, err := audit.BuildList(ids)
+	if err != nil {
+		return nil, err
+	}
+	count := dividend.EligibilityCount{Period: period, Residents: int64(len(ids)), Adults: adults,
+		DividendRecipients: int64(len(ids)), RecipientsRoot: ledger.EncodeHash(root)}
 	if err := count.Validate(); err != nil {
 		return nil, err
 	}
@@ -119,7 +137,7 @@ func (s *State) ReportEligibility(ctx context.Context, period string) (*record.E
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Store.SaveCount(env, ids); err != nil {
+	if err := s.Store.SaveCount(env, entries); err != nil {
 		return nil, err
 	}
 	return env, s.logAndSend(ctx, env)
@@ -148,6 +166,94 @@ func (s *State) receiveSettlement(_ context.Context, env *record.Envelope) error
 		return fmt.Errorf("a settlement for count %s was already received", d.Basis)
 	}
 	return s.Store.SaveSettlement(env, d)
+}
+
+// receiveAuditRequest is the inbox handler for audit-request/1. The State
+// is obliged to answer, so it stores the request and answers in the
+// background once the receipt has gone back.
+func (s *State) receiveAuditRequest(_ context.Context, env *record.Envelope) error {
+	if env.Issuer != s.Commonwealth {
+		return fmt.Errorf("audits are accepted only from %s", s.Commonwealth)
+	}
+	req, err := audit.DecodeRequest(env)
+	if err != nil {
+		return err
+	}
+	count, err := s.Store.Record(req.Count)
+	if err != nil || count.Direction != "sent" || count.Envelope.Type != dividend.EligibilityCountType {
+		return fmt.Errorf("no eligibility count %s was sent by this State", req.Count)
+	}
+	if err := s.Store.SaveAuditRequest(env, req.Count); err != nil {
+		return err
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		s.AnswerAudit(ctx, env.ID)
+	}()
+	return nil
+}
+
+// AnswerAudit opens the sampled entries of the audited count and sends
+// them to the Audit Office. The answer carries personal data for the
+// sampled residents only, so it is sent but never logged. Calling it again
+// resends the same answer.
+func (s *State) AnswerAudit(ctx context.Context, requestID string) error {
+	a, err := s.Store.AuditByRequest(requestID)
+	if err != nil {
+		return err
+	}
+	if a.Response != nil {
+		return s.deliver(ctx, a.Response.Envelope)
+	}
+	reqRec, err := s.Store.Record(requestID)
+	if err != nil {
+		return err
+	}
+	countRec, err := s.Store.Record(a.Count)
+	if err != nil {
+		return err
+	}
+	entries, err := s.Store.CountEntries(a.Count)
+	if err != nil {
+		return err
+	}
+	resp, err := audit.Open(countRec.Envelope, reqRec.Envelope, entries, func(ref string) (audit.Person, error) {
+		r, err := s.Store.Resident(ref)
+		if err != nil {
+			return audit.Person{}, err
+		}
+		return audit.Person{Name: r.Name, BirthDate: r.BirthDate}, nil
+	})
+	if err != nil {
+		return err
+	}
+	env, err := s.Identity.Message(reqRec.Envelope.Issuer, audit.ResponseType, resp)
+	if err != nil {
+		return err
+	}
+	if err := s.Store.SaveAuditResponse(requestID, env); err != nil {
+		return err
+	}
+	return s.deliver(ctx, env)
+}
+
+// receiveFinding is the inbox handler for audit-finding/1.
+func (s *State) receiveFinding(_ context.Context, env *record.Envelope) error {
+	if env.Issuer != s.Commonwealth {
+		return fmt.Errorf("findings are accepted only from %s", s.Commonwealth)
+	}
+	f, err := audit.DecodeFinding(env)
+	if err != nil {
+		return err
+	}
+	a, err := s.Store.AuditByRequest(f.Request)
+	if err != nil || a.Count != f.Count {
+		return fmt.Errorf("no audit %s of count %s", f.Request, f.Count)
+	}
+	return s.Store.SaveFinding(env, f.Request)
 }
 
 // Pay pays a received settlement to every resident it covers, then sends
@@ -281,6 +387,10 @@ func Summary(env *record.Envelope) string {
 	case dividend.ConfirmationType:
 		if c, err := dividend.DecodeConfirmation(env); err == nil {
 			return fmt.Sprintf("paid %d recipients, %s %s", c.PaidRecipients, c.PaidTotal, c.Unit)
+		}
+	case audit.FindingType:
+		if f, err := audit.DecodeFinding(env); err == nil {
+			return fmt.Sprintf("%d of %d sampled unverified; repayment %s %s", f.Unverified, f.Sampled, f.Repayment, f.Unit)
 		}
 	}
 	return strings.TrimSuffix(env.Type, "/1")

@@ -28,7 +28,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "dev" {
-		fmt.Fprintln(os.Stderr, "usage: pcstate dev [-addr 127.0.0.1:8080] [-password PASSWORD] [-residents 60] [-per-person 25.50] [-name NAME]")
+		fmt.Fprintln(os.Stderr, "usage: pcstate dev [-addr 127.0.0.1:8080] [-password PASSWORD] [-residents 60] [-per-person 25.50] [-name NAME] [-ghosts 0]")
 		os.Exit(2)
 	}
 	if err := dev(os.Args[2:]); err != nil {
@@ -44,6 +44,7 @@ func dev(args []string) error {
 	residents := fs.Int("residents", 60, "number of sample residents")
 	perPerson := fs.String("per-person", "25.50", "dividend per person the local Commonwealth pays")
 	name := fs.String("name", "Example State", "the State's name")
+	ghosts := fs.Int("ghosts", 0, "invent this many residents, to watch the audit catch an inflated count")
 	fs.Parse(args)
 
 	if *password == "" {
@@ -62,7 +63,7 @@ func dev(args []string) error {
 
 	net, err := devnet.Start(devnet.Options{
 		DataDir: dir, StateName: *name, PerPerson: *perPerson, Residents: *residents,
-		SettlementDelay: 1500 * time.Millisecond,
+		SettlementDelay: 1500 * time.Millisecond, Ghosts: *ghosts,
 	})
 	if err != nil {
 		return err

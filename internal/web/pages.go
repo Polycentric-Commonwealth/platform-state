@@ -23,8 +23,32 @@ type cycle struct {
 	Recipients          int64
 	Settlement          *store.Settlement
 	Status, StatusClass string
+	Audit, AuditClass   string
 	CanPay              bool
 	Resend              []string
+}
+
+// auditStatus describes the audit of a count in a few words.
+func (s *Server) auditStatus(cy *cycle, countID string) error {
+	a, err := s.Store.AuditForCount(countID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		cy.Audit = "Not audited yet"
+		return nil
+	case err != nil:
+		return err
+	case a.Finding == nil:
+		cy.Audit, cy.AuditClass = "In progress", "wait"
+		if a.Response != nil && a.Response.Delivery == "pending" {
+			cy.Resend = append(cy.Resend, a.Response.Envelope.ID)
+		}
+	case a.Finding.Unverified == 0:
+		cy.Audit, cy.AuditClass = fmt.Sprintf("Passed: all %d sampled verified", a.Finding.Sampled), "ok"
+	default:
+		f := a.Finding
+		cy.Audit, cy.AuditClass = fmt.Sprintf("%d of %d sampled not found; repayment %s %s", f.Unverified, f.Sampled, money(f.Repayment), f.Unit), "bad"
+	}
+	return nil
 }
 
 func (s *Server) cycles() ([]cycle, error) {
@@ -51,6 +75,9 @@ func (s *Server) cycles() ([]cycle, error) {
 			cy.Status, cy.StatusClass, cy.Resend = "Count not yet delivered", "wait", []string{r.Envelope.ID}
 			out = append(out, cy)
 			continue
+		}
+		if err := s.auditStatus(&cy, r.Envelope.ID); err != nil {
+			return nil, err
 		}
 		st, err := s.Store.SettlementForBasis(r.Envelope.ID)
 		switch {

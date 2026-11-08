@@ -21,11 +21,25 @@ CREATE TABLE IF NOT EXISTS records (
 CREATE INDEX IF NOT EXISTS records_type ON records (type, issued_at);
 
 -- Which residents an eligibility count included, so the payment run pays
--- exactly the people counted.
+-- exactly the people counted, and the committed recipient list behind the
+-- count's recipients_root, so the State can answer an audit. Salts are
+-- secret until an auditor samples their entry.
 CREATE TABLE IF NOT EXISTS eligibility_snapshots (
     count_record TEXT NOT NULL REFERENCES records (id),
     resident_id  TEXT NOT NULL REFERENCES residents (id),
-    PRIMARY KEY (count_record, resident_id)
+    position     INTEGER NOT NULL,
+    salt         BLOB NOT NULL,
+    commitment   BLOB NOT NULL,
+    PRIMARY KEY (count_record, resident_id),
+    UNIQUE (count_record, position)
+);
+
+-- Eligibility audits of this State's counts.
+CREATE TABLE IF NOT EXISTS audits (
+    request   TEXT PRIMARY KEY REFERENCES records (id),
+    count     TEXT NOT NULL REFERENCES records (id),
+    response  TEXT REFERENCES records (id),
+    finding   TEXT REFERENCES records (id)
 );
 
 CREATE TABLE IF NOT EXISTS settlements (

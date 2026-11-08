@@ -13,6 +13,7 @@ import (
 	crand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/polycentric-commonwealth/foundation/audit"
 	"github.com/polycentric-commonwealth/foundation/dividend"
 	"github.com/polycentric-commonwealth/foundation/ledger"
 	"github.com/polycentric-commonwealth/foundation/protocol"
@@ -46,6 +48,11 @@ type Options struct {
 	Residents       int           // sample residents to register, defaults to 60
 	SettlementDelay time.Duration // how long the Commonwealth takes to settle
 	Logf            func(format string, args ...any)
+
+	// Ghosts adds this many invented residents to the State's register, to
+	// demonstrate the eligibility audit catching a State that inflates its
+	// count. The Commonwealth's simulated field checks cannot find them.
+	Ghosts int
 }
 
 // Network is a running dev network.
@@ -59,12 +66,14 @@ type Network struct {
 	servers []*httptest.Server
 }
 
-// Close stops the servers and closes the database.
+// Close waits for background work, stops the servers and closes the
+// database.
 func (n *Network) Close() {
+	n.State.Close()
+	n.Commonwealth.wg.Wait()
 	for _, s := range n.servers {
 		s.Close()
 	}
-	n.Commonwealth.wg.Wait()
 	n.Store.Close()
 }
 
@@ -164,6 +173,14 @@ func Start(opts Options) (*Network, error) {
 	if err := Seed(db, opts.Residents); err != nil {
 		return fail(err)
 	}
+	ghosts := map[string]bool{}
+	ids, err := seed(db, opts.Ghosts, rand.New(rand.NewPCG(3, 4)))
+	if err != nil {
+		return fail(err)
+	}
+	for _, id := range ids {
+		ghosts[id] = true
+	}
 
 	stReg, err := newRegistry()
 	if err != nil {
@@ -184,6 +201,15 @@ func Start(opts Options) (*Network, error) {
 		return fail(err)
 	}
 	net.Commonwealth = newCommonwealth(cw.id, cw.signed, cwReg, net.HTTP, opts)
+	// Simulated field verification: auditors can find every registered
+	// resident except the invented ones.
+	net.Commonwealth.fieldCheck = func(o *audit.Opening) bool {
+		if ghosts[o.Ref] {
+			return false
+		}
+		r, err := db.Resident(o.Ref)
+		return err == nil && r.Name == o.Name && r.BirthDate == o.BirthDate
+	}
 	cw.handler = net.Commonwealth.handler()
 	return net, nil
 }
@@ -203,9 +229,19 @@ type Commonwealth struct {
 	http      *http.Client
 	logf      func(string, ...any)
 
+	// fieldCheck stands in for auditors confirming in person that a
+	// sampled resident exists.
+	fieldCheck func(*audit.Opening) bool
+
 	mu          sync.Mutex
 	settlements map[string]*record.Envelope
+	audits      map[string]*auditCase // by request id
 	wg          sync.WaitGroup
+}
+
+type auditCase struct {
+	count, request, settlement *record.Envelope
+	finding                    *record.Envelope
 }
 
 func newCommonwealth(id protocol.Identity, desc *record.Envelope, reg *registry.Registry, client *http.Client, opts Options) *Commonwealth {
@@ -216,10 +252,12 @@ func newCommonwealth(id protocol.Identity, desc *record.Envelope, reg *registry.
 		Witness:   &ledger.Witness{Self: id, Registry: reg, Store: &ledger.MemoryWitnessStore{}},
 		perPerson: opts.PerPerson, delay: opts.SettlementDelay, http: client, logf: opts.Logf,
 		settlements: map[string]*record.Envelope{},
+		audits:      map[string]*auditCase{},
 	}
 	c.Receiver = &protocol.Receiver{Self: id, Registry: reg, Store: protocol.NewMemoryStore(), Handlers: map[string]protocol.Handler{
 		dividend.EligibilityCountType: c.receiveCount,
 		dividend.ConfirmationType:     c.receiveConfirmation,
+		audit.ResponseType:            c.receiveAuditResponse,
 	}}
 	return c
 }
@@ -269,11 +307,99 @@ func (c *Commonwealth) settle(count *record.Envelope) error {
 	if _, err := c.Sender.Send(ctx, env); err != nil {
 		return err
 	}
+	if err := c.publish(ctx, count.Issuer); err != nil {
+		return err
+	}
+	return c.startAudit(ctx, count, env)
+}
+
+func (c *Commonwealth) publish(ctx context.Context, witness string) error {
 	if _, err := c.Log.Checkpoint(); err != nil {
 		return err
 	}
-	_, err = c.Log.RequestCosignatures(ctx, c.Registry, c.http, []string{count.Issuer})
+	_, err := c.Log.RequestCosignatures(ctx, c.Registry, c.http, []string{witness})
 	return err
+}
+
+// startAudit asks the State to open a random sample of the count's
+// recipient list. The request is a public act and is logged.
+func (c *Commonwealth) startAudit(ctx context.Context, count, settlement *record.Envelope) error {
+	req, err := audit.NewRequest(count)
+	if err != nil {
+		return err
+	}
+	env, err := c.Identity.Message(count.Issuer, audit.RequestType, req)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.audits[env.ID] = &auditCase{count: count, request: env, settlement: settlement}
+	c.mu.Unlock()
+	if _, err := c.Log.Append(env); err != nil {
+		return err
+	}
+	_, err = c.Sender.Send(ctx, env)
+	return err
+}
+
+// receiveAuditResponse checks the State's openings, verifies each sampled
+// person in the (simulated) field, and issues a finding. The openings are
+// not kept.
+func (c *Commonwealth) receiveAuditResponse(_ context.Context, env *record.Envelope) error {
+	var head struct {
+		Request string `json:"request"`
+	}
+	if err := json.Unmarshal(env.Payload, &head); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	ac, ok := c.audits[head.Request]
+	c.mu.Unlock()
+	if !ok || ac.finding != nil {
+		return fmt.Errorf("no open audit %s", head.Request)
+	}
+	results, err := audit.Check(ac.count, ac.request, env)
+	if err != nil {
+		return err
+	}
+	unverified := 0
+	for _, r := range results {
+		if !r.Valid || !c.fieldCheck(r.Opening) {
+			unverified++
+		}
+	}
+	s, err := dividend.DecodeSettlement(ac.settlement)
+	if err != nil {
+		return err
+	}
+	f, err := audit.NewFinding(ac.count, ac.request, s, len(results), unverified, audit.DefaultMultiplier)
+	if err != nil {
+		return err
+	}
+	finding, err := c.Identity.Message(ac.count.Issuer, audit.FindingType, f)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	ac.finding = finding
+	c.mu.Unlock()
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := c.Log.Append(finding); err != nil {
+			c.logf("devnet: logging finding: %v", err)
+			return
+		}
+		if _, err := c.Sender.Send(ctx, finding); err != nil {
+			c.logf("devnet: sending finding: %v", err)
+		}
+		if err := c.publish(ctx, ac.count.Issuer); err != nil {
+			c.logf("devnet: publishing ledger: %v", err)
+		}
+	}()
+	return nil
 }
 
 func (c *Commonwealth) receiveConfirmation(_ context.Context, env *record.Envelope) error {
@@ -298,13 +424,20 @@ var (
 // Seed registers n fictional residents with a spread of ages, including
 // children. The same n always gives the same people.
 func Seed(db *store.Store, n int) error {
-	r := rand.New(rand.NewPCG(1, 2))
+	_, err := seed(db, n, rand.New(rand.NewPCG(1, 2)))
+	return err
+}
+
+func seed(db *store.Store, n int, r *rand.Rand) ([]string, error) {
+	var ids []string
 	for i := 0; i < n; i++ {
 		name := givenNames[r.IntN(len(givenNames))] + " " + familyNames[r.IntN(len(familyNames))]
 		birth := time.Date(1940+r.IntN(84), time.Month(1+r.IntN(12)), 1+r.IntN(28), 0, 0, 0, 0, time.UTC)
-		if _, err := db.AddResident(name, birth.Format("2006-01-02")); err != nil {
-			return err
+		id, err := db.AddResident(name, birth.Format("2006-01-02"))
+		if err != nil {
+			return nil, err
 		}
+		ids = append(ids, id)
 	}
-	return nil
+	return ids, nil
 }
