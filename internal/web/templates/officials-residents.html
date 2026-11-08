@@ -1,0 +1,43 @@
+{{define "content"}}
+<h1>Residents</h1>
+<p class="lead">The residents' register is personal data. It stays with this State: only counts are ever sent to the Commonwealth.</p>
+
+<h2>Register a resident</h2>
+<form method="post" action="/officials/residents">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="row">
+    <label>Full name <input name="name" required maxlength="200" autocomplete="off"></label>
+    <label>Date of birth <input name="birth_date" type="date" required></label>
+    <button class="primary" type="submit">Register</button>
+  </div>
+</form>
+
+<h2>Register</h2>
+<form method="get" action="/officials/residents" class="row" role="search">
+  <label>Find by name or number <input name="q" value="{{.Query}}" type="search"></label>
+  <button class="secondary" type="submit">Find</button>
+</form>
+<p class="muted">{{.Active}} active residents. Showing {{len .Residents}}{{if .Query}} matching "{{.Query}}"{{end}}.</p>
+<div class="table-scroll">
+<table class="stack-sm">
+  <thead><tr><th scope="col">Number</th><th scope="col">Name</th><th scope="col">Born</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
+  <tbody>
+  {{range .Residents}}
+    <tr>
+      <td data-label="Number">{{.ID}}</td>
+      <td data-label="Name">{{.Name}}</td>
+      <td data-label="Born">{{.BirthDate}}</td>
+      <td data-label="Status">{{if eq .Status "active"}}<span class="status ok">Active</span>{{else}}<span class="status wait">Inactive</span>{{end}}</td>
+      <td data-label="Action"><form class="inline-form" method="post" action="/officials/residents/{{.ID}}/status">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        {{if eq .Status "active"}}<input type="hidden" name="status" value="inactive"><button class="secondary" type="submit">Mark inactive</button>
+        {{else}}<input type="hidden" name="status" value="active"><button class="secondary" type="submit">Mark active</button>{{end}}
+      </form></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5">No residents found.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}

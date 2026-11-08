@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>Overview</h1>
+<p class="lead">{{.StateName}} pays every resident an equal share of the Commonwealth dividend each period. Each step is a signed record that anyone can check in the public ledger.</p>
+
+<dl class="facts">
+  <div><dt>Registered residents</dt><dd>{{.ResidentCount}}</dd></div>
+  <div><dt>Of whom adults</dt><dd>{{.AdultCount}}</dd></div>
+  <div><dt>Latest dividend</dt><dd>{{with .Latest}}{{money .PerPerson}} {{.Unit}}{{else}}None yet{{end}}</dd></div>
+  <div><dt>Records in the ledger</dt><dd>{{.LedgerSize}}</dd></div>
+</dl>
+
+{{with .Latest}}
+<p>The most recent dividend, for {{.Period}}, was {{money .PerPerson}} {{.Unit}} per person for {{.Recipients}} residents, {{money .Total}} {{.Unit}} in total. <a href="/dividends">See every period</a>.</p>
+{{end}}
+
+<h2>Check your dividend</h2>
+<p>Residents can see every payment made to them. <a href="/my-dividend">Look up your payments</a>.</p>
+
+<h2>How this State is verified</h2>
+<p>This State signs every record it sends with a key that {{.Parent}} has vouched for. Each record is added to the State's public ledger, which independent witnesses check and timestamp, so no record can be changed or backdated without it showing.</p>
+{{end}}

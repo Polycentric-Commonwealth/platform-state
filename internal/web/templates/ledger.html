@@ -1,0 +1,38 @@
+{{define "content"}}
+<h1>Public ledger</h1>
+<p class="lead">Every record this State has issued, in order. Records can be added but never changed or removed.</p>
+{{with .Checkpoint}}
+<p>The ledger holds {{.Size}} records. Its latest checkpoint was signed {{fmtTime .IssuedAt}}{{if .Witnesses}}, and cosigned by {{range $i, $w := .Witnesses}}{{if $i}}, {{end}}{{$w.Instance}} at {{fmtTime $w.At}}{{end}}{{else}}, and has not been cosigned by a witness yet{{end}}.</p>
+{{else}}
+<p>No checkpoint has been published yet.</p>
+{{end}}
+<p class="muted">The fingerprint is drawn from each record's hash: any copy with a different fingerprint is not the same record.</p>
+<div class="table-scroll">
+<table class="stack-sm">
+  <thead>
+    <tr>
+      <th scope="col" class="num">No.</th>
+      <th scope="col">Record</th>
+      <th scope="col">Issued</th>
+      <th scope="col">Fingerprint</th>
+      <th scope="col">Checked</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Entries}}
+    <tr>
+      <td data-label="No." class="num"><a href="/ledger/{{.Index}}">{{.Index}}</a></td>
+      <td data-label="Record"><span class="cell"><a href="/ledger/{{.Index}}">{{typeLabel .Envelope.Type}}</a><br><span class="muted">{{summary .Envelope}}</span></span></td>
+      <td data-label="Issued">{{fmtTime .Envelope.IssuedAt}}</td>
+      <td data-label="Fingerprint">{{template "fingerprint" (fingerprint .Envelope false)}}</td>
+      <td data-label="Checked">{{template "entry-status" .}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5">The ledger is empty. Records appear here as soon as the State sends them.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+{{define "entry-status"}}{{if .Signed}}<span class="status bad">Signature invalid</span>{{else if not .Witnessed.IsZero}}<span class="status ok">Witnessed {{fmtTimeT .Witnessed}}</span>{{else}}<span class="status wait">Signed, awaiting witness</span>{{end}}{{end}}

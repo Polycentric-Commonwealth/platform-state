@@ -1,0 +1,23 @@
+{{define "content"}}
+<p><a href="/ledger">Public ledger</a></p>
+<h1>Record {{.Entry.Index}}: {{typeLabel .Entry.Envelope.Type}}</h1>
+<p class="lead">{{summary .Entry.Envelope}}</p>
+<p>{{template "fingerprint" (fingerprint .Entry.Envelope true)}}</p>
+<p class="hash">Hash {{.Hash}}</p>
+
+<h2>Checks</h2>
+<dl class="checks">
+  <dt>Signature</dt>
+  <dd>{{if .Entry.Signed}}<span class="status bad">Does not verify</span> {{.Entry.Signed}}{{else}}<span class="status ok">Valid</span> signed by {{.Entry.Envelope.Issuer}} with key {{.Entry.Envelope.Key}}, which {{.Parent}} has vouched for{{end}}</dd>
+  <dt>In the ledger</dt>
+  <dd>{{if .Entry.Evidence}}<span class="status wait">Not yet proven</span> {{.Entry.Evidence}}{{else}}<span class="status ok">Proven</span> included at position {{.Entry.Index}} of a cosigned checkpoint{{end}}</dd>
+  <dt>Existed by</dt>
+  <dd>{{if .Entry.Witnessed.IsZero}}Not yet witnessed{{else}}{{fmtTimeT .Entry.Witnessed}}, according to independent witnesses{{end}}</dd>
+  <dt>Sent to</dt>
+  <dd>{{with .Entry.Envelope.To}}{{.}}{{else}}Published to everyone{{end}}</dd>
+</dl>
+
+<h2>Signed record</h2>
+<p>This is the exact record as signed. <a href="/pc/ledger/evidence?index={{.Entry.Index}}">Download the evidence</a> to check it yourself.</p>
+<pre class="json">{{.JSON}}</pre>
+{{end}}

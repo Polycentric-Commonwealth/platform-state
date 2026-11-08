@@ -1,0 +1,19 @@
+{{define "content"}}
+<h1>Dividend cycle</h1>
+<p class="lead">Report each period's eligibility count. When the Commonwealth's settlement arrives, pay it here. The State checks every settlement against its own count before accepting it.</p>
+
+<h2>Report an eligibility count</h2>
+<form method="post" action="/officials/report">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="row">
+    <label>Period
+      <input name="period" type="month" required value="{{.NextPeriod}}"></label>
+    <button class="primary" type="submit">Report {{.Active}} residents</button>
+  </div>
+</form>
+<p class="muted">Counts every active resident, with adults counted as of the first day of the period. Only the totals are sent.</p>
+
+<h2>Periods</h2>
+{{template "cycles" .}}
+{{if .Waiting}}<p class="muted">Waiting for a settlement? It usually arrives within seconds. <a href="/officials">Refresh</a>.</p>{{end}}
+{{end}}

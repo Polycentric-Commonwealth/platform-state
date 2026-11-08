@@ -1,0 +1,29 @@
+{{define "content"}}
+<h1>My dividend</h1>
+{{if .Resident}}
+<p class="lead">{{.Resident.Name}}, resident number <span class="nowrap">{{.Resident.ID}}</span>. You have received {{money .Total}} XCU in dividends.</p>
+<div class="table-scroll">
+<table class="stack-sm">
+  <thead><tr><th scope="col">Period</th><th scope="col" class="num">Amount</th><th scope="col">Paid</th></tr></thead>
+  <tbody>
+  {{range .Payments}}
+    <tr><td data-label="Period">{{.Period}}</td><td data-label="Amount" class="num">{{money .Amount}} {{.Unit}}</td><td data-label="Paid">{{fmtTime .PaidAt}}</td></tr>
+  {{else}}
+    <tr><td colspan="3">No payments yet. Dividends are paid after each period is settled.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p><a href="/my-dividend">Look up another resident</a></p>
+{{else}}
+<p class="lead">Enter your resident number and date of birth to see every dividend paid to you.</p>
+<p class="dev-note">This sign-in is a placeholder for development. A live State would use its own secure identity service.</p>
+<form class="stack" method="post" action="/my-dividend">
+  <label>Resident number <span class="hint">For example R-000012</span>
+    <input name="resident" required autocomplete="off" value="{{.ResidentInput}}"></label>
+  <label>Date of birth
+    <input name="birth_date" type="date" required></label>
+  <div><button class="primary" type="submit">Show my payments</button></div>
+</form>
+{{end}}
+{{end}}

@@ -1,0 +1,96 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} – {{.StateName}}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{{if .Official}}
+<div class="officials-band">
+  <div class="wrap">
+    <nav aria-label="Officials">
+      <ul>
+        <li><a href="/officials"{{if eq .Section "officials-dividends"}} aria-current="page"{{end}}>Dividend cycle</a></li>
+        <li><a href="/officials/residents"{{if eq .Section "officials-residents"}} aria-current="page"{{end}}>Residents</a></li>
+        <li><a href="/officials/ledger"{{if eq .Section "officials-ledger"}} aria-current="page"{{end}}>Ledger</a></li>
+      </ul>
+    </nav>
+    <form method="post" action="/officials/logout">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit">Sign out</button>
+    </form>
+  </div>
+</div>
+{{end}}
+<header class="site-header">
+  <div class="wrap">
+    <div>
+      <p class="state-name"><a href="/">{{.StateName}}</a></p>
+      <p class="state-of">A State of the Polycentric Commonwealth</p>
+    </div>
+    <nav class="main-nav" aria-label="Main">
+      <ul>
+        <li><a href="/"{{if eq .Section "overview"}} aria-current="page"{{end}}>Overview</a></li>
+        <li><a href="/dividends"{{if eq .Section "dividends"}} aria-current="page"{{end}}>Dividends</a></li>
+        <li><a href="/ledger"{{if eq .Section "ledger"}} aria-current="page"{{end}}>Public ledger</a></li>
+        <li><a href="/my-dividend"{{if eq .Section "my-dividend"}} aria-current="page"{{end}}>My dividend</a></li>
+        {{if not .Official}}<li><a href="/officials"{{if eq .Section "login"}} aria-current="page"{{end}}>Officials</a></li>{{end}}
+      </ul>
+    </nav>
+  </div>
+  <div class="wrap"><hr></div>
+</header>
+<main id="main">
+  <div class="wrap">
+    {{with .Notice}}<p class="notice" role="status">{{.}}</p>{{end}}
+    {{with .Error}}<p class="notice error" role="alert">{{.}}</p>{{end}}
+    {{template "content" .}}
+  </div>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Instance <strong>{{.Instance}}</strong>, attested by {{.Parent}}. Every official act is signed and recorded in the <a href="/ledger">public ledger</a>.</p>
+    <p>Machine-readable: <a href="/.well-known/pc-instance">instance description</a>, <a href="/pc/ledger/checkpoint">latest checkpoint</a>.</p>
+  </div>
+</footer>
+</body>
+</html>{{end}}
+
+{{define "cycles"}}
+<p class="muted">Newest period first. Counts include every resident; no names leave the State.</p>
+<div class="table-scroll">
+<table class="stack-sm">
+  <thead>
+    <tr>
+      <th scope="col">Period</th>
+      <th scope="col" class="num">Recipients</th>
+      <th scope="col" class="num">Per person</th>
+      <th scope="col" class="num">Total</th>
+      <th scope="col">Status</th>
+      {{if .Actions}}<th scope="col">Action</th>{{end}}
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Cycles}}
+    <tr>
+      <td data-label="Period">{{.Period}}</td>
+      <td data-label="Recipients" class="num">{{.Recipients}}</td>
+      <td data-label="Per person" class="num">{{if .Settlement}}{{money .Settlement.PerPerson}} {{.Settlement.Unit}}{{else}}–{{end}}</td>
+      <td data-label="Total" class="num">{{if .Settlement}}{{money .Settlement.Total}} {{.Settlement.Unit}}{{else}}–{{end}}</td>
+      <td data-label="Status"><span class="status {{.StatusClass}}">{{.Status}}</span></td>
+      {{if $.Actions}}<td data-label="Action"><span class="cell">
+        {{if .CanPay}}<form class="inline-form" method="post" action="/officials/pay/{{.Settlement.RecordID}}"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="primary" type="submit">Pay {{.Recipients}} residents</button></form>{{end}}
+        {{range .Resend}}<form class="inline-form" method="post" action="/officials/resend/{{.}}"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="secondary" type="submit">Send again</button></form>{{end}}
+      </span></td>{{end}}
+    </tr>
+  {{else}}
+    <tr><td colspan="6">No dividend periods yet.{{if .Actions}} Report the first eligibility count above.{{end}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+{{define "fingerprint"}}<span class="fingerprint{{if .Large}} large{{end}}" role="img" aria-label="Fingerprint {{.Hex}}">{{range .Cells}}<span class="c{{.}}"></span>{{end}}</span>{{end}}

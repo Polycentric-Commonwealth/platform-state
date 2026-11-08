@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Officials' sign-in</h1>
+<p class="lead">Officials run the dividend cycle and keep the residents' register.</p>
+<form class="stack" method="post" action="/officials/login">
+  <input type="hidden" name="next" value="{{.Next}}">
+  <label>Password
+    <input name="password" type="password" required autocomplete="current-password" autofocus></label>
+  <div><button class="primary" type="submit">Sign in</button></div>
+</form>
+{{end}}
