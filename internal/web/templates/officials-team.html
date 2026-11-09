@@ -1,0 +1,62 @@
+{{define "content"}}
+<h1>Officials</h1>
+<p class="lead">Every official has their own account. Records sent to other instances are signed by the State; this page shows which official did what.</p>
+
+{{if .NewPassword}}
+<div class="handover" role="status">
+  <p>Give <strong>{{.NewUsername}}</strong> this password in person or by a secure channel. It is shown only once.</p>
+  <p class="password"><code>{{.NewPassword}}</code></p>
+</div>
+{{end}}
+
+{{if .Me.Can "admin"}}
+<h2>Add an official</h2>
+<form method="post" action="/officials/team">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="row">
+    <label>Full name <input name="name" required maxlength="200" autocomplete="off"></label>
+    <label>Username <input name="username" required pattern="[a-z][a-z0-9._\-]{1,31}" autocapitalize="none" spellcheck="false" autocomplete="off"></label>
+    <label>Role
+      <select name="role">{{range .Roles}}<option value="{{.}}"{{if eq . "registrar"}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+    <button class="primary" type="submit">Create account</button>
+  </div>
+</form>
+<p class="muted">Registrars keep the residents' register. Treasurers report counts, pay dividends and publish the ledger. Admins can do both and manage accounts.</p>
+{{end}}
+
+<h2>Accounts</h2>
+<div class="table-scroll">
+<table class="stack-sm">
+  <thead><tr><th scope="col">Name</th><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Status</th>{{if .Me.Can "admin"}}<th scope="col">Action</th>{{end}}</tr></thead>
+  <tbody>
+  {{range .Officials}}
+    <tr>
+      <td data-label="Name">{{.Name}}</td>
+      <td data-label="Username">{{.Username}}</td>
+      <td data-label="Role">{{.Role}}</td>
+      <td data-label="Status">{{if .Disabled}}<span class="status wait">Disabled</span>{{else}}<span class="status ok">Active</span>{{end}}</td>
+      {{if $.Me.Can "admin"}}<td data-label="Action"><span class="cell">
+        <form class="inline-form" method="post" action="/officials/team/{{.Username}}/reset"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="secondary" type="submit">{{if .Disabled}}Enable with new password{{else}}Reset password{{end}}</button></form>
+        {{if and (not .Disabled) (ne .Username $.Me.Username)}}<form class="inline-form" method="post" action="/officials/team/{{.Username}}/disable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="secondary" type="submit">Disable</button></form>{{end}}
+      </span></td>{{end}}
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2>Activity</h2>
+<p class="muted">The most recent 100 actions, newest first.</p>
+<div class="table-scroll">
+<table class="stack-sm">
+  <thead><tr><th scope="col">When</th><th scope="col">Official</th><th scope="col">Action</th><th scope="col">Detail</th></tr></thead>
+  <tbody>
+  {{range .ActionLog}}
+    <tr><td data-label="When">{{fmtTime .At}}</td><td data-label="Official">{{.Username}}</td><td data-label="Action">{{.Action}}</td><td data-label="Detail">{{.Detail}}</td></tr>
+  {{else}}
+    <tr><td colspan="4">No activity yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}

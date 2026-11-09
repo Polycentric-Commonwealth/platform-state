@@ -2,9 +2,9 @@
 <h1>Ledger</h1>
 <p class="lead">A checkpoint is published automatically after every record. Publish one by hand to have the witnesses confirm the ledger's current state.</p>
 {{with .Checkpoint}}<p>Latest checkpoint: {{.Size}} records, signed {{fmtTime .IssuedAt}}, cosigned by {{len .Witnesses}} of {{$.WitnessCount}} witnesses.</p>{{end}}
-<form method="post" action="/officials/publish">
+{{if .Me.Can "treasurer"}}<form method="post" action="/officials/publish">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <button class="primary" type="submit">Publish a checkpoint</button>
-</form>
+</form>{{end}}
 <p><a href="/ledger">View the public ledger</a></p>
 {{end}}

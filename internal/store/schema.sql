@@ -70,3 +70,58 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     entry BLOB NOT NULL,
     leaf  BLOB NOT NULL
 );
+
+-- The ledger's signed checkpoints and the witnesses' cosignatures, so
+-- evidence survives a restart.
+CREATE TABLE IF NOT EXISTS ledger_checkpoints (
+    seq  INTEGER PRIMARY KEY,
+    id   TEXT NOT NULL UNIQUE,
+    body BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ledger_cosignatures (
+    checkpoint TEXT NOT NULL REFERENCES ledger_checkpoints (id),
+    witness    TEXT NOT NULL,
+    body       BLOB NOT NULL,
+    PRIMARY KEY (checkpoint, witness)
+);
+
+-- What this State, acting as a witness, last cosigned for each log.
+CREATE TABLE IF NOT EXISTS witnessed_logs (
+    origin TEXT PRIMARY KEY,
+    size   INTEGER NOT NULL,
+    root   BLOB NOT NULL
+);
+
+-- Officials' accounts. Every official has their own account and one role.
+CREATE TABLE IF NOT EXISTS officials (
+    username      TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    role          TEXT NOT NULL CHECK (role IN ('admin', 'registrar', 'treasurer')),
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    disabled      INTEGER NOT NULL DEFAULT 0
+);
+
+-- Signed-in sessions. Only a hash of each session token is stored.
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash BLOB PRIMARY KEY,
+    username   TEXT NOT NULL REFERENCES officials (username),
+    expires_at TEXT NOT NULL
+);
+
+-- Which official did what, for the State's own accountability. Internal:
+-- official records sent to other instances are signed by the instance.
+CREATE TABLE IF NOT EXISTS official_actions (
+    id       INTEGER PRIMARY KEY,
+    at       TEXT NOT NULL,
+    username TEXT NOT NULL,
+    action   TEXT NOT NULL,
+    detail   TEXT NOT NULL DEFAULT ''
+);
+
+-- Small values the platform keeps between restarts, such as the secret for
+-- form tokens.
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value BLOB NOT NULL
+);

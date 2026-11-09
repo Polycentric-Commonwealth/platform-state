@@ -5,6 +5,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -32,6 +33,14 @@ type Config struct {
 	Witnesses    ledger.WitnessPolicy // witnesses asked to cosign, and the policy used to check evidence
 	HTTP         *http.Client         // client for other instances
 	Now          func() time.Time     // defaults to time.Now
+
+	// Attestations are the parent's attestations of the State's keys,
+	// served at /.well-known/pc-attestations.
+	Attestations []*record.Envelope
+
+	// Discover, if set, fetches an unknown instance's description and
+	// attestations into the registry (registry.Fetcher.Discover).
+	Discover func(ctx context.Context, instance string) error
 }
 
 // State is a running State instance.
@@ -57,20 +66,25 @@ func New(cfg Config) (*State, error) {
 		cfg.Now = time.Now
 	}
 	s := &State{Config: cfg}
-	s.Log = ledger.NewLog(cfg.Identity, store.Ledger{S: cfg.Store})
+	log, err := ledger.OpenLog(cfg.Identity, store.Ledger{S: cfg.Store})
+	if err != nil {
+		return nil, fmt.Errorf("state: opening the ledger: %w", err)
+	}
+	s.Log = log
 	s.Sender = &protocol.Sender{Self: cfg.Identity, Registry: cfg.Registry, HTTP: cfg.HTTP}
 	s.Receiver = &protocol.Receiver{
 		Self:     cfg.Identity,
 		Registry: cfg.Registry,
 		Store:    store.Inbox{S: cfg.Store},
 		Now:      cfg.Now,
+		Discover: cfg.Discover,
 		Handlers: map[string]protocol.Handler{
 			dividend.SettlementType: s.receiveSettlement,
 			audit.RequestType:       s.receiveAuditRequest,
 			audit.FindingType:       s.receiveFinding,
 		},
 	}
-	s.Witness = &ledger.Witness{Self: cfg.Identity, Registry: cfg.Registry, Store: &ledger.MemoryWitnessStore{}, Now: cfg.Now}
+	s.Witness = &ledger.Witness{Self: cfg.Identity, Registry: cfg.Registry, Store: store.Witnessed{S: cfg.Store}, Now: cfg.Now, Discover: cfg.Discover}
 	return s, nil
 }
 
@@ -98,6 +112,10 @@ func (s *State) ProtocolHandler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(data)
+	})
+	mux.HandleFunc("GET "+registry.AttestationsPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(append([]*record.Envelope{}, s.Attestations...))
 	})
 	return mux
 }

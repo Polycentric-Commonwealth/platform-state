@@ -226,7 +226,7 @@ func (s *Server) myDividendLookup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) dividendsView(r *http.Request) (*view, error) {
 	v := s.newView(r, "Dividend cycle", "officials-dividends")
-	v.Actions = true
+	v.Actions = v.Me != nil && v.Me.Can(store.RoleTreasurer)
 	var err error
 	if v.Cycles, err = s.cycles(); err != nil {
 		return nil, err
@@ -285,6 +285,7 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.dividendsError(w, r, deliveryProblem("eligibility count", err))
 	default:
+		s.logAction(r, "reported eligibility count", r.PostFormValue("period"))
 		http.Redirect(w, r, "/officials?done=reported", http.StatusSeeOther)
 	}
 }
@@ -297,8 +298,10 @@ func (s *Server) pay(w http.ResponseWriter, r *http.Request) {
 	case err != nil && env == nil:
 		s.fail(w, err)
 	case err != nil:
+		s.logAction(r, "paid dividend", "settlement "+r.PathValue("id"))
 		s.dividendsError(w, r, "Residents have been paid. "+deliveryProblem("confirmation", err))
 	default:
+		s.logAction(r, "paid dividend", "settlement "+r.PathValue("id"))
 		http.Redirect(w, r, "/officials?done=paid", http.StatusSeeOther)
 	}
 }
@@ -308,6 +311,7 @@ func (s *Server) resend(w http.ResponseWriter, r *http.Request) {
 		s.dividendsError(w, r, deliveryProblem("record", err))
 		return
 	}
+	s.logAction(r, "resent record", r.PathValue("id"))
 	http.Redirect(w, r, "/officials?done=resent", http.StatusSeeOther)
 }
 
@@ -332,7 +336,7 @@ func (s *Server) residents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addResident(w http.ResponseWriter, r *http.Request) {
-	_, err := s.Store.AddResident(r.PostFormValue("name"), r.PostFormValue("birth_date"))
+	id, err := s.Store.AddResident(r.PostFormValue("name"), r.PostFormValue("birth_date"))
 	if errors.Is(err, store.ErrInvalidResident) {
 		v, verr := s.residentsView(r)
 		if verr != nil {
@@ -346,6 +350,7 @@ func (s *Server) addResident(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.logAction(r, "registered resident", id)
 	http.Redirect(w, r, "/officials/residents?done=registered", http.StatusSeeOther)
 }
 
@@ -358,6 +363,7 @@ func (s *Server) residentStatus(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.logAction(r, "changed resident status", r.PathValue("id")+" to "+r.PostFormValue("status"))
 	http.Redirect(w, r, "/officials/residents?done=status", http.StatusSeeOther)
 }
 
@@ -369,6 +375,7 @@ func (s *Server) officialsLedger(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
+	s.logAction(r, "published checkpoint", "")
 	if _, err := s.State.PublishLedger(r.Context()); err != nil {
 		v := s.newView(r, "Ledger", "officials-ledger")
 		v.Checkpoint = s.checkpoint()
@@ -378,4 +385,99 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/officials/ledger?done=published", http.StatusSeeOther)
+}
+
+func (s *Server) teamView(r *http.Request) (*view, error) {
+	v := s.newView(r, "Officials", "officials-team")
+	v.Roles = store.Roles
+	var err error
+	if v.Officials, err = s.Store.Officials(); err != nil {
+		return nil, err
+	}
+	v.ActionLog, err = s.Store.Actions(100)
+	return v, err
+}
+
+func (s *Server) team(w http.ResponseWriter, r *http.Request) {
+	v, err := s.teamView(r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, http.StatusOK, "officials-team", v)
+}
+
+// teamResult shows the team page with a message, and a new password once if
+// one was just set.
+func (s *Server) teamResult(w http.ResponseWriter, r *http.Request, status int, notice, problem, username, password string) {
+	v, err := s.teamView(r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	v.Notice, v.Error, v.NewUsername, v.NewPassword = notice, problem, username, password
+	s.render(w, status, "officials-team", v)
+}
+
+func (s *Server) addOfficial(w http.ResponseWriter, r *http.Request) {
+	username := strings.TrimSpace(strings.ToLower(r.PostFormValue("username")))
+	password, err := store.GeneratePassword()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	err = s.Store.AddOfficial(username, r.PostFormValue("name"), r.PostFormValue("role"), password)
+	if errors.Is(err, store.ErrInvalidOfficial) {
+		s.teamResult(w, r, http.StatusUnprocessableEntity, "", "The account was not created: "+strings.TrimPrefix(err.Error(), store.ErrInvalidOfficial.Error()+": ")+".", "", "")
+		return
+	} else if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.logAction(r, "added official", username+" as "+r.PostFormValue("role"))
+	s.teamResult(w, r, http.StatusOK, "Account created.", "", username, password)
+}
+
+func (s *Server) resetOfficial(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	password, err := store.GeneratePassword()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := s.Store.SetPassword(username, password); errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "No such official.", http.StatusNotFound)
+		return
+	} else if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := s.Store.SetDisabled(username, false); err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.logAction(r, "reset password", username)
+	if username == me(r).Username {
+		// Resetting your own password signs you out everywhere, here too.
+		http.Redirect(w, r, "/officials/login", http.StatusSeeOther)
+		return
+	}
+	s.teamResult(w, r, http.StatusOK, "Password reset. The official has been signed out everywhere.", "", username, password)
+}
+
+func (s *Server) disableOfficial(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	if username == me(r).Username {
+		s.teamResult(w, r, http.StatusUnprocessableEntity, "", "You cannot disable your own account. Ask another admin.", "", "")
+		return
+	}
+	if err := s.Store.SetDisabled(username, true); errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "No such official.", http.StatusNotFound)
+		return
+	} else if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.logAction(r, "disabled official", username)
+	s.teamResult(w, r, http.StatusOK, "Account disabled and signed out everywhere. Reset its password to enable it again.", "", "", "")
 }

@@ -12,9 +12,9 @@ With [Go](https://go.dev/dl/) 1.24 or later installed:
 go run ./cmd/pcstate dev
 ```
 
-This starts the State together with a small local Commonwealth on your machine, registers 60 fictional residents, and prints the web address and an officials' password. Then:
+This starts the State together with a small local Commonwealth on your machine, registers 60 fictional residents, and prints the web address and the password of an `admin` official. Then:
 
-1. Open the web interface and sign in as an official.
+1. Open the web interface and sign in as `admin`.
 2. Report an eligibility count for a period. The local Commonwealth settles it within a couple of seconds.
 3. Pay the settlement. Every counted resident is credited, and a signed confirmation goes back to the Commonwealth.
 4. Look at the public **Dividends** page: a few seconds after the count, the Commonwealth's Audit Office checks a sample of the people counted and the result appears in the Audit column.
@@ -30,6 +30,53 @@ The audit finds roughly 25 of 500 sampled people missing and charges the State a
 
 Everything is created fresh on each run (keys, database and certificates) and removed when you stop the server. Options: `-addr`, `-password`, `-residents`, `-per-person`, `-name` and `-ghosts`.
 
+## Deploy it
+
+A deployment keeps its key, configuration, attestations and database in one directory, discovers other instances from their published descriptions, and keeps serving while they are unreachable.
+
+```sh
+go build ./cmd/pcstate
+
+# 1. Create the deployment. The anchor is the Commonwealth's pinned public key.
+./pcstate init -dir /srv/pcstate -instance state.example -name "Example State" \
+  -base-url https://state.example/ -listen :8443 -tls-cert cert.pem -tls-key key.pem \
+  -parent commonwealth.example -anchor commonwealth.example=ed25519:KEY
+
+# 2. Send /srv/pcstate/description.json to the parent (a Region or the Commonwealth).
+#    It checks the key with you out of band and returns an attestation.
+./pcstate attestation add -dir /srv/pcstate attestation.json
+
+# 3. Run it.
+./pcstate serve -dir /srv/pcstate
+```
+
+`init` prints the password of the first admin official, once. Without `-tls-cert`, the platform serves plain HTTP and expects a TLS proxy in front; `-base-url` must be the public https address either way. Other flags: `-witness` (repeatable) and `-witness-threshold` choose who cosigns the ledger, `-peer ID=https://host:port` reaches an instance at an address other than its domain name, and `-ca-file` trusts extra certificates.
+
+### Officials
+
+Every official has their own account with one role:
+
+| Role | Can |
+| --- | --- |
+| `registrar` | Keep the residents' register |
+| `treasurer` | Report counts, pay settlements, resend records and publish the ledger |
+| `admin` | Everything, and manage accounts |
+
+Every official can view every officials' page. Admins add, reset and disable accounts on the **Officials** page, or from the command line with `pcstate official add|reset|disable|list -dir DIR`. Passwords are generated, shown once and stored as PBKDF2-SHA256 hashes. Each action is recorded with the official who took it; records sent to other instances are still signed by the State.
+
+### Trying a deployment without a Commonwealth
+
+There is no Commonwealth platform yet, so `pcstate devcommonwealth` runs a stand-in on its own: it attests States, settles every count, audits it (passing every valid opening, since it cannot see a State's register) and witnesses ledgers.
+
+```sh
+./pcstate devcommonwealth run -dir cw -base-url https://127.0.0.1:9443/ -listen 127.0.0.1:9443 \
+  -tls-cert cert.pem -tls-key key.pem -ca-file cert.pem \
+  -peer state.example=https://127.0.0.1:8443     # prints the -anchor for pcstate init
+./pcstate devcommonwealth attest -dir cw /srv/pcstate/description.json > attestation.json
+```
+
+The test `internal/deploy` runs the whole arrangement: a stand-in Commonwealth and two deployed States over HTTPS, one witnessing the other's ledger, through a dividend cycle, an audit and a restart.
+
 ## What it does
 
 | Area | Who uses it | What it does |
@@ -40,7 +87,8 @@ Everything is created fresh on each run (keys, database and certificates) and re
 | Dividend cycle | Officials | Report eligibility counts, pay settlements, resend undelivered records |
 | Residents | Officials | Register residents and mark them active or inactive |
 | Ledger | Officials | Publish a checkpoint and collect witness cosignatures |
-| `/pc/inbox`, `/pc/ledger/…`, `/.well-known/pc-instance` | Other instances | The [integration protocol](https://github.com/Polycentric-Commonwealth/foundation/blob/main/specs/integration-protocol.md) and [public ledger](https://github.com/Polycentric-Commonwealth/foundation/blob/main/specs/public-ledger.md) endpoints |
+| Officials | Officials | Accounts, roles and the activity log |
+| `/pc/inbox`, `/pc/ledger/…`, `/.well-known/pc-instance`, `/.well-known/pc-attestations` | Other instances | The [integration protocol](https://github.com/Polycentric-Commonwealth/foundation/blob/main/specs/integration-protocol.md) and [public ledger](https://github.com/Polycentric-Commonwealth/foundation/blob/main/specs/public-ledger.md) endpoints |
 
 ## How it is built
 
@@ -50,10 +98,11 @@ Everything is created fresh on each run (keys, database and certificates) and re
 
 | Package | Role |
 | --- | --- |
-| [`internal/store`](internal/store/) | The database: residents, sent and received records, eligibility snapshots, settlements, payments and ledger entries |
+| [`internal/store`](internal/store/) | The database: residents, records, eligibility snapshots, settlements, payments, the ledger with its checkpoints and cosignatures, officials and sessions |
 | [`internal/state`](internal/state/) | The State's core: reporting counts, checking settlements, paying, logging and witnessing |
 | [`internal/web`](internal/web/) | Public pages, the resident lookup and the officials' workspace |
-| [`internal/devnet`](internal/devnet/) | The local Commonwealth (with a stand-in Audit Office and simulated field checks) and sample residents used by `pcstate dev` and the tests |
+| [`internal/deploy`](internal/deploy/) | Deployments: configuration, keys, attestations, discovery and serving |
+| [`internal/devnet`](internal/devnet/) | The stand-in Commonwealth (with an Audit Office and simulated field checks), sample residents, and the development network used by `pcstate dev`, `pcstate devcommonwealth` and the tests |
 | [`cmd/pcstate`](cmd/pcstate/) | The command |
 
 ### Where personal data lives
@@ -74,13 +123,13 @@ Each logged record triggers a new checkpoint, which the witnesses cosign. If a r
 
 ## Not yet built
 
-This version runs only as a local development network. Before a real State could use it, it needs:
+Deployments work, but before a real State could rely on this, it needs:
 
-- **Production mode:** persistent keys, configuration, joining a real registry, and fetching other instances' descriptions.
-- **Real identity:** residents currently look up payments with their resident number and date of birth, which is a development placeholder. Officials share one password; real deployments need individual accounts and roles.
+- **Resident sign-in:** residents look up payments with their resident number and date of birth, a placeholder. The plan is passkeys enrolled with a one-time code ([federated identity](https://github.com/Polycentric-Commonwealth/foundation/blob/main/specs/federated-identity.md#signing-in)). Officials have individual accounts but no second factor yet.
+- **Uniqueness and credentials:** registering residents' uniqueness tokens and issuing them credentials, using the foundation's `uniqueness` and `credential` packages.
 - **Real payments:** dividends are credited to a record in the database, not sent through a bank or payment system.
-- **Real audits:** the dev network's Audit Office "verifies" people by looking them up in the State's own database. A real one sends auditors into the field, and repayments are not yet deducted from anything.
-- **Persistent checkpoints:** the ledger's entries are stored in SQLite, but its checkpoints and cosignatures are held in memory by the foundation library and are lost on restart.
+- **Real audits:** the stand-in Audit Office passes every valid opening, or in `pcstate dev` looks people up in the State's own database. A real one sends auditors into the field, and repayments are not yet deducted from anything.
+- **Key rotation and backups:** commands to rotate the signing key and to back up and restore a deployment.
 - **The other State modules** in the [platforms plan](https://github.com/Polycentric-Commonwealth/foundation/blob/main/docs/design/platforms-plan.md#6-state-platform): legislature, law registry, elections, taxes and rents, courts, migration and more.
 
 ## Licence

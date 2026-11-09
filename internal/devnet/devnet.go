@@ -200,17 +200,17 @@ func Start(opts Options) (*Network, error) {
 	if err != nil {
 		return fail(err)
 	}
-	net.Commonwealth = newCommonwealth(cw.id, cw.signed, cwReg, net.HTTP, opts)
+	net.Commonwealth = NewCommonwealth(cw.id, cw.signed, cwReg, net.HTTP, opts.PerPerson, opts.SettlementDelay, opts.Logf)
 	// Simulated field verification: auditors can find every registered
 	// resident except the invented ones.
-	net.Commonwealth.fieldCheck = func(o *audit.Opening) bool {
+	net.Commonwealth.FieldCheck = func(o *audit.Opening) bool {
 		if ghosts[o.Ref] {
 			return false
 		}
 		r, err := db.Resident(o.Ref)
 		return err == nil && r.Name == o.Name && r.BirthDate == o.BirthDate
 	}
-	cw.handler = net.Commonwealth.handler()
+	cw.handler = net.Commonwealth.Handler()
 	return net, nil
 }
 
@@ -229,9 +229,9 @@ type Commonwealth struct {
 	http      *http.Client
 	logf      func(string, ...any)
 
-	// fieldCheck stands in for auditors confirming in person that a
-	// sampled resident exists.
-	fieldCheck func(*audit.Opening) bool
+	// FieldCheck stands in for auditors confirming in person that a
+	// sampled resident exists. By default every valid opening passes.
+	FieldCheck func(*audit.Opening) bool
 
 	mu          sync.Mutex
 	settlements map[string]*record.Envelope
@@ -244,15 +244,21 @@ type auditCase struct {
 	finding                    *record.Envelope
 }
 
-func newCommonwealth(id protocol.Identity, desc *record.Envelope, reg *registry.Registry, client *http.Client, opts Options) *Commonwealth {
+// NewCommonwealth returns a stand-in Commonwealth that settles every count
+// at perPerson XCU after delay, audits it and witnesses States' ledgers.
+func NewCommonwealth(id protocol.Identity, desc *record.Envelope, reg *registry.Registry, client *http.Client, perPerson string, delay time.Duration, logf func(string, ...any)) *Commonwealth {
+	if logf == nil {
+		logf = log.Printf
+	}
 	c := &Commonwealth{
 		Identity: id, Description: desc, Registry: reg,
 		Log:       ledger.NewLog(id, nil),
 		Sender:    &protocol.Sender{Self: id, Registry: reg, HTTP: client},
 		Witness:   &ledger.Witness{Self: id, Registry: reg, Store: &ledger.MemoryWitnessStore{}},
-		perPerson: opts.PerPerson, delay: opts.SettlementDelay, http: client, logf: opts.Logf,
+		perPerson: perPerson, delay: delay, http: client, logf: logf,
 		settlements: map[string]*record.Envelope{},
 		audits:      map[string]*auditCase{},
+		FieldCheck:  func(*audit.Opening) bool { return true },
 	}
 	c.Receiver = &protocol.Receiver{Self: id, Registry: reg, Store: protocol.NewMemoryStore(), Handlers: map[string]protocol.Handler{
 		dividend.EligibilityCountType: c.receiveCount,
@@ -262,13 +268,27 @@ func newCommonwealth(id protocol.Identity, desc *record.Envelope, reg *registry.
 	return c
 }
 
-func (c *Commonwealth) handler() http.Handler {
+// Handler serves the Commonwealth's protocol endpoints and well-known
+// description.
+func (c *Commonwealth) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/pc/"+protocol.InboxPath, c.Receiver)
 	mux.Handle("/pc/"+ledger.WitnessPath, c.Witness)
 	mux.Handle("/pc/ledger/", http.StripPrefix("/pc/ledger", c.Log.Handler()))
+	mux.HandleFunc("GET "+registry.WellKnownPath, func(w http.ResponseWriter, r *http.Request) {
+		data, _ := c.Description.Marshal()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	})
+	mux.HandleFunc("GET "+registry.AttestationsPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("[]\n"))
+	})
 	return mux
 }
+
+// Wait waits for the Commonwealth's background work to finish.
+func (c *Commonwealth) Wait() { c.wg.Wait() }
 
 // receiveCount accepts an eligibility count and settles it shortly after,
 // as the real Commonwealth would once its Commons Fund calculation runs.
@@ -364,7 +384,7 @@ func (c *Commonwealth) receiveAuditResponse(_ context.Context, env *record.Envel
 	}
 	unverified := 0
 	for _, r := range results {
-		if !r.Valid || !c.fieldCheck(r.Opening) {
+		if !r.Valid || !c.FieldCheck(r.Opening) {
 			unverified++
 		}
 	}

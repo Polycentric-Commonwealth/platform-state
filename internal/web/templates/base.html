@@ -15,9 +15,11 @@
         <li><a href="/officials"{{if eq .Section "officials-dividends"}} aria-current="page"{{end}}>Dividend cycle</a></li>
         <li><a href="/officials/residents"{{if eq .Section "officials-residents"}} aria-current="page"{{end}}>Residents</a></li>
         <li><a href="/officials/ledger"{{if eq .Section "officials-ledger"}} aria-current="page"{{end}}>Ledger</a></li>
+        <li><a href="/officials/team"{{if eq .Section "officials-team"}} aria-current="page"{{end}}>Officials</a></li>
       </ul>
     </nav>
     <form method="post" action="/officials/logout">
+      {{with .Me}}<span class="who">{{.Name}}, {{.Role}}</span>{{end}}
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button type="submit">Sign out</button>
     </form>

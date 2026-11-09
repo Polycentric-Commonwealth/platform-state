@@ -4,20 +4,20 @@
 package web
 
 import (
+	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/polycentric-commonwealth/foundation/dividend"
@@ -44,27 +44,21 @@ type Server struct {
 	State *state.State
 	Store *store.Store
 
-	// Password is the officials' password. It must not be empty.
-	Password string
 	// SecureCookies sets the Secure flag on session cookies; turn it off
 	// only for local development over plain HTTP.
 	SecureCookies bool
 
-	secret   []byte
-	pages    map[string]*template.Template
-	mu       sync.Mutex
-	sessions map[string]time.Time
-	handler  http.Handler
+	secret  []byte
+	pages   map[string]*template.Template
+	handler http.Handler
 }
 
-// New returns a server ready to handle requests.
-func New(st *state.State, db *store.Store, password string, secureCookies bool) (*Server, error) {
-	if password == "" {
-		return nil, fmt.Errorf("web: an officials' password is required")
-	}
-	s := &Server{State: st, Store: db, Password: password, SecureCookies: secureCookies, sessions: map[string]time.Time{}}
-	s.secret = make([]byte, 32)
-	if _, err := rand.Read(s.secret); err != nil {
+// New returns a server ready to handle requests. Officials sign in with
+// their own accounts in db.
+func New(st *state.State, db *store.Store, secureCookies bool) (*Server, error) {
+	s := &Server{State: st, Store: db, SecureCookies: secureCookies}
+	var err error
+	if s.secret, err = db.Secret("web-form-secret", 32); err != nil {
 		return nil, err
 	}
 	if err := s.parseTemplates(); err != nil {
@@ -90,16 +84,20 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /officials/login", s.loginPage)
 	mux.HandleFunc("POST /officials/login", s.login)
-	mux.HandleFunc("POST /officials/logout", s.official(s.logout))
-	mux.HandleFunc("GET /officials", s.official(s.officialsDividends))
-	mux.HandleFunc("POST /officials/report", s.official(s.report))
-	mux.HandleFunc("POST /officials/pay/{id}", s.official(s.pay))
-	mux.HandleFunc("POST /officials/resend/{id}", s.official(s.resend))
-	mux.HandleFunc("GET /officials/residents", s.official(s.residents))
-	mux.HandleFunc("POST /officials/residents", s.official(s.addResident))
-	mux.HandleFunc("POST /officials/residents/{id}/status", s.official(s.residentStatus))
-	mux.HandleFunc("GET /officials/ledger", s.official(s.officialsLedger))
-	mux.HandleFunc("POST /officials/publish", s.official(s.publish))
+	mux.HandleFunc("POST /officials/logout", s.official("", s.logout))
+	mux.HandleFunc("GET /officials", s.official("", s.officialsDividends))
+	mux.HandleFunc("POST /officials/report", s.official(store.RoleTreasurer, s.report))
+	mux.HandleFunc("POST /officials/pay/{id}", s.official(store.RoleTreasurer, s.pay))
+	mux.HandleFunc("POST /officials/resend/{id}", s.official(store.RoleTreasurer, s.resend))
+	mux.HandleFunc("GET /officials/residents", s.official("", s.residents))
+	mux.HandleFunc("POST /officials/residents", s.official(store.RoleRegistrar, s.addResident))
+	mux.HandleFunc("POST /officials/residents/{id}/status", s.official(store.RoleRegistrar, s.residentStatus))
+	mux.HandleFunc("GET /officials/ledger", s.official("", s.officialsLedger))
+	mux.HandleFunc("POST /officials/publish", s.official(store.RoleTreasurer, s.publish))
+	mux.HandleFunc("GET /officials/team", s.official("", s.team))
+	mux.HandleFunc("POST /officials/team", s.official(store.RoleAdmin, s.addOfficial))
+	mux.HandleFunc("POST /officials/team/{username}/reset", s.official(store.RoleAdmin, s.resetOfficial))
+	mux.HandleFunc("POST /officials/team/{username}/disable", s.official(store.RoleAdmin, s.disableOfficial))
 
 	protocol := s.State.ProtocolHandler()
 	mux.Handle("/pc/", protocol)
@@ -223,6 +221,7 @@ type view struct {
 	Title, Section              string
 	StateName, Instance, Parent string
 	Official                    bool
+	Me                          *store.Official
 	CSRF                        string
 	Notice, Error               string
 
@@ -241,12 +240,17 @@ type view struct {
 	Payments                          []store.Payment
 	Total, ResidentInput, Next, Query string
 	Residents                         []store.Resident
+	Officials                         []store.Official
+	ActionLog                         []store.Action
+	Roles                             []string
+	NewPassword, NewUsername          string
+	Username                          string
 }
 
 func (s *Server) newView(r *http.Request, title, section string) *view {
 	v := &view{Title: title, Section: section, StateName: s.State.Name(), Instance: s.State.Identity.Instance, Parent: s.State.Commonwealth}
-	if id, ok := s.session(r); ok {
-		v.Official, v.CSRF = true, s.csrfToken(id)
+	if o, token, ok := s.session(r); ok {
+		v.Official, v.Me, v.CSRF = true, o, s.csrfToken(token)
 	}
 	if msg, ok := notices[r.URL.Query().Get("done")]; ok {
 		v.Notice = msg
@@ -287,19 +291,16 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 
 // --- Sessions ----------------------------------------------------------------
 
-func (s *Server) session(r *http.Request) (string, bool) {
+func (s *Server) session(r *http.Request) (*store.Official, string, bool) {
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
-		return "", false
+		return nil, "", false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	exp, ok := s.sessions[c.Value]
-	if !ok || time.Now().After(exp) {
-		delete(s.sessions, c.Value)
-		return "", false
+	o, err := s.Store.Session(c.Value)
+	if err != nil {
+		return nil, "", false
 	}
-	return c.Value, true
+	return o, c.Value, true
 }
 
 func (s *Server) csrfToken(sessionID string) string {
@@ -308,11 +309,20 @@ func (s *Server) csrfToken(sessionID string) string {
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
-// official wraps a handler that requires a signed-in official; POST
-// requests must also carry the session's CSRF token.
-func (s *Server) official(h http.HandlerFunc) http.HandlerFunc {
+type ctxKey struct{}
+
+// me returns the signed-in official of a request that went through official.
+func me(r *http.Request) *store.Official {
+	o, _ := r.Context().Value(ctxKey{}).(*store.Official)
+	return o
+}
+
+// official wraps a handler that requires a signed-in official whose role
+// allows the work (any official when role is empty). POST requests must
+// also carry the session's CSRF token.
+func (s *Server) official(role string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, ok := s.session(r)
+		o, token, ok := s.session(r)
 		if !ok {
 			if r.Method == http.MethodGet {
 				http.Redirect(w, r, "/officials/login?next="+r.URL.Path, http.StatusSeeOther)
@@ -322,18 +332,33 @@ func (s *Server) official(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if r.Method == http.MethodPost {
-			want := s.csrfToken(id)
+			want := s.csrfToken(token)
 			if subtle.ConstantTimeCompare([]byte(r.PostFormValue("csrf")), []byte(want)) != 1 {
 				http.Error(w, "This form has expired. Go back, reload the page and try again.", http.StatusForbidden)
 				return
 			}
 		}
-		h(w, r)
+		if role != "" && !o.Can(role) {
+			http.Error(w, fmt.Sprintf("Your role (%s) does not allow this. Ask an admin.", o.Role), http.StatusForbidden)
+			return
+		}
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, o)))
+	}
+}
+
+// logAction records what the signed-in official did.
+func (s *Server) logAction(r *http.Request, action, detail string) {
+	o := me(r)
+	if o == nil {
+		return
+	}
+	if err := s.Store.LogAction(o.Username, action, detail); err != nil {
+		log.Printf("web: logging action: %v", err)
 	}
 }
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.session(r); ok {
+	if _, _, ok := s.session(r); ok {
 		http.Redirect(w, r, "/officials", http.StatusSeeOther)
 		return
 	}
@@ -350,34 +375,39 @@ func safeNext(next string) string {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if subtle.ConstantTimeCompare([]byte(r.PostFormValue("password")), []byte(s.Password)) != 1 {
-		time.Sleep(500 * time.Millisecond)
+	username := strings.TrimSpace(strings.ToLower(r.PostFormValue("username")))
+	o, err := s.Store.Authenticate(username, r.PostFormValue("password"))
+	if errors.Is(err, store.ErrBadCredentials) {
 		v := s.newView(r, "Officials' sign-in", "login")
 		v.Next = safeNext(r.PostFormValue("next"))
-		v.Error = "That password is not correct."
+		v.Username = username
+		v.Error = "That username and password do not match an active account."
 		s.render(w, http.StatusUnauthorized, "login", v)
 		return
-	}
-	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
+	} else if err != nil {
 		s.fail(w, err)
 		return
 	}
-	id := base64.RawURLEncoding.EncodeToString(b)
-	s.mu.Lock()
-	s.sessions[id] = time.Now().Add(sessionLength)
-	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: id, Path: "/", HttpOnly: true, Secure: s.SecureCookies,
+	token, err := s.Store.NewSession(o.Username, sessionLength)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := s.Store.LogAction(o.Username, "signed in", ""); err != nil {
+		log.Printf("web: logging action: %v", err)
+	}
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: s.SecureCookies,
 		SameSite: http.SameSiteLaxMode, MaxAge: int(sessionLength.Seconds())})
 	http.Redirect(w, r, safeNext(r.PostFormValue("next")), http.StatusSeeOther)
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
-		s.mu.Lock()
-		delete(s.sessions, c.Value)
-		s.mu.Unlock()
+		if err := s.Store.EndSession(c.Value); err != nil {
+			log.Printf("web: ending session: %v", err)
+		}
 	}
+	s.logAction(r, "signed out", "")
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.SecureCookies})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

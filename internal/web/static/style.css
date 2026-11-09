@@ -50,7 +50,8 @@ a:hover { color: var(--ink); }
 .officials-band a { color: #e8eeec; }
 .officials-band nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
 .officials-band a[aria-current="page"] { text-decoration-thickness: 3px; }
-.officials-band form { margin: 0; }
+.officials-band form { margin: 0; display: flex; align-items: center; gap: 0.75rem; }
+.officials-band .who { color: #b9c6cb; font-size: 0.9rem; }
 .officials-band button { background: none; border: 1px solid #8a9aa2; color: #e8eeec; padding: 0.2rem 0.75rem; border-radius: 3px; font: inherit; cursor: pointer; }
 
 main { padding: 2rem 0 4rem; }
@@ -121,6 +122,9 @@ button.secondary { background: transparent; color: var(--teal-dark); }
 /* Messages */
 .notice { border-left: 5px solid var(--teal); background: var(--surface); padding: 0.75rem 1rem; margin: 0 0 1.5rem; max-width: var(--measure); }
 .notice.error { border-left-color: var(--red); }
+.handover { border: 2px solid var(--teal); padding: 0.75rem 1rem; margin: 0 0 1.5rem; max-width: var(--measure); }
+.handover p { margin: 0.25rem 0; }
+.handover .password code { font-size: 1.35rem; letter-spacing: 0.04em; }
 .dev-note { border: 1px dashed var(--ochre); padding: 0.6rem 0.9rem; max-width: var(--measure); color: var(--ink); background: #fbf6ec; }
 
 /* Record detail */

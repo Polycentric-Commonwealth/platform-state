@@ -2,7 +2,7 @@
 <h1>Dividend cycle</h1>
 <p class="lead">Report each period's eligibility count. When the Commonwealth's settlement arrives, pay it here. The State checks every settlement against its own count before accepting it.</p>
 
-<h2>Report an eligibility count</h2>
+{{if .Actions}}<h2>Report an eligibility count</h2>
 <form method="post" action="/officials/report">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <div class="row">
@@ -12,6 +12,7 @@
   </div>
 </form>
 <p class="muted">Counts every active resident, with adults counted as of the first day of the period. Only the totals are sent, with a commitment to exactly who was counted. When the Audit Office samples the list, this State answers automatically, revealing only the sampled residents.</p>
+{{else}}<p class="muted">Treasurers report counts and pay settlements. Your role is {{.Me.Role}}.</p>{{end}}
 
 <h2>Periods</h2>
 {{template "cycles" .}}
