@@ -420,7 +420,7 @@ func (in *Instance) Run(ctx context.Context) {
 		err := in.Connect(cctx)
 		cancel()
 		if err != nil {
-			in.Logf("pcstate: not fully connected yet, retrying in 30s: %v", err)
+			in.Logf("not fully connected yet, retrying in 30s: %v", err)
 			wait = 30 * time.Second
 			continue
 		}

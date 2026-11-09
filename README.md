@@ -64,9 +64,9 @@ Every official has their own account with one role:
 
 Every official can view every officials' page. Admins add, reset and disable accounts on the **Officials** page, or from the command line with `pcstate official add|reset|disable|list -dir DIR`. Passwords are generated, shown once and stored as PBKDF2-SHA256 hashes. Each action is recorded with the official who took it; records sent to other instances are still signed by the State.
 
-### Trying a deployment without a Commonwealth
+### Trying a deployment
 
-There is no Commonwealth platform yet, so `pcstate devcommonwealth` runs a stand-in on its own: it attests States, settles every count, audits it (passing every valid opening, since it cannot see a State's register) and witnesses ledgers.
+The [Commonwealth platform](https://github.com/Polycentric-Commonwealth/platform-commonwealth) can be deployed next to it: its officials attest the State, settle periods and run audits. For a quicker test, `pcstate devcommonwealth` runs a stand-in Commonwealth on its own: it attests States, settles every count, audits it (passing every valid opening, since it cannot see a State's register) and witnesses ledgers.
 
 ```sh
 ./pcstate devcommonwealth run -dir cw -base-url https://127.0.0.1:9443/ -listen 127.0.0.1:9443 \
